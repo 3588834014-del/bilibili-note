@@ -3,7 +3,7 @@
 > 把 B站视频链接变成 Obsidian 结构化笔记的 [DeepSeek Harness](https://github.com/deepseek-ai) skill。
 > **只拉字幕，绝不下载视频。**
 
-[![CI](https://github.com/OWNER/bilibili-note/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/bilibili-note/actions/workflows/ci.yml)
+[![CI](https://github.com/3588834014-del/bilibili-note/actions/workflows/ci.yml/badge.svg)](https://github.com/3588834014-del/bilibili-note/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
 
@@ -39,14 +39,14 @@ flowchart LR
 
 ```bash
 # Linux / macOS / Git Bash
-git clone https://github.com/OWNER/bilibili-note.git
+git clone https://github.com/3588834014-del/bilibili-note.git
 mkdir -p ~/.agents/skills
 cp -r bilibili-note ~/.agents/skills/
 ```
 
 ```powershell
 # Windows PowerShell
-git clone https://github.com/OWNER/bilibili-note.git
+git clone https://github.com/3588834014-del/bilibili-note.git
 Copy-Item -Recurse -Force .\bilibili-note "$env:USERPROFILE\.agents\skills\bilibili-note"
 ```
 

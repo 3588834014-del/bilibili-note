@@ -26,9 +26,9 @@ dependencies = []
 ytdlp = ["yt-dlp>=2024.1.1"]
 
 [project.urls]
-Homepage = "https://github.com/OWNER/bilibili-note"
-Issues = "https://github.com/OWNER/bilibili-note/issues"
-Changelog = "https://github.com/OWNER/bilibili-note/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/3588834014-del/bilibili-note"
+Issues = "https://github.com/3588834014-del/bilibili-note/issues"
+Changelog = "https://github.com/3588834014-del/bilibili-note/blob/main/CHANGELOG.md"
 
 [tool.ruff]
 line-length = 100
