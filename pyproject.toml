@@ -1,0 +1,50 @@
+[project]
+name = "bilibili-note"
+version = "1.0.0"
+description = "把 B站视频链接变成 Obsidian 结构化笔记的 dsh skill（只拉字幕，不下载视频）"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+keywords = ["obsidian", "bilibili", "yt-dlp", "skill", "notes"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: Chinese (Simplified)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Text Processing :: Markup :: Markdown",
+]
+
+# 刻意不声明任何依赖：skill 运行时只用标准库。
+# yt-dlp 是外部命令依赖（不是 Python 包依赖），见 README。
+dependencies = []
+
+[project.optional-dependencies]
+# yt-dlp 也提供 Python 包，装了这个就不必单独装 CLI
+ytdlp = ["yt-dlp>=2024.1.1"]
+
+[project.urls]
+Homepage = "https://github.com/OWNER/bilibili-note"
+Issues = "https://github.com/OWNER/bilibili-note/issues"
+Changelog = "https://github.com/OWNER/bilibili-note/blob/main/CHANGELOG.md"
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]  # 中文注释与长 URL 无法可靠折行
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]  # 测试需要先把 scripts/ 插进 sys.path 再 import
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# 这是一个 skill 仓库，不是一个可导入的包；不打包 Python 模块。
+py-modules = []

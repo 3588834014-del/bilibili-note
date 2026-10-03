@@ -1,0 +1,16 @@
+# 统一换行符：本项目所有产物都必须是 LF。
+# 脚本以 newline="\n" 写文件，测试也断言"无 CRLF"；若 Git 在 checkout 时
+# 把文本文件转成 CRLF，Windows 上就会引入回归。
+* text=auto eol=lf
+
+# 明确按二进制处理，避免任何换行改写
+*.pyc binary
+*.srt binary
+
+# 文档与代码都用 LF
+*.md text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.txt text eol=lf

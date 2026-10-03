@@ -1,0 +1,28 @@
+# 缓存与编译产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+
+# 运行产物：绝不应该进仓库
+work/
+*.srt
+manifest.json
+
+# 凭据：绝对不能提交（含 SESSDATA 登录态）
+cookies.txt
+cookies*.txt
+*_cookies*.txt
+.env
+.env.*
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
