@@ -259,7 +259,7 @@ class TestVerifyCommand(unittest.TestCase):
     def _write(self, content, suffix=".md"):
         tmp = Path(tempfile.mkdtemp())
         p = tmp / f"note{suffix}"
-        p.write_text(content, encoding="utf-8", newline="\n")
+        bn.write_text_lf(p, content)
         return p
 
     def _draft(self, **over):
@@ -710,6 +710,77 @@ class TestRepoHygiene(unittest.TestCase):
         for pattern in ("cookies.txt", "__pycache__", "*.srt"):
             with self.subTest(pattern=pattern):
                 self.assertIn(pattern, text)
+
+
+class TestPython38Compatibility(unittest.TestCase):
+    """声明支持的最低 Python 版本必须真的能跑。
+
+    回归背景：`Path.write_text(..., newline=)` 是 Python 3.10 才加入的参数，
+    在 3.8 上直接 TypeError —— 而 CI 之前跑的是 3.12，本地也是 3.12，
+    所以一路绿灯直到第一次推送才发现 `requires-python = ">=3.8"` 是假的。
+    这里做静态扫描，把这类"新 API 混进旧版本声明"的问题挡在提交前。
+    """
+
+    REPO = Path(__file__).resolve().parent.parent
+    MIN_MINOR = 8  # 与 pyproject.toml 的 requires-python 保持一致
+
+    def _py_files(self):
+        for sub in ("scripts", "tests"):
+            for p in (self.REPO / sub).rglob("*.py"):
+                if "__pycache__" not in p.parts:
+                    yield p
+
+    def test_pyproject_min_version_matches_this_test(self):
+        text = (self.REPO / "pyproject.toml").read_text(encoding="utf-8")
+        m = re.search(r'requires-python\s*=\s*">=3\.(\d+)"', text)
+        self.assertIsNotNone(m, "pyproject.toml 里找不到 requires-python")
+        self.assertEqual(
+            int(m.group(1)), self.MIN_MINOR,
+            "改了 requires-python 就要同步更新 TestPython38Compatibility.MIN_MINOR",
+        )
+
+    def test_no_write_text_newline_kwarg(self):
+        """write_text(newline=) 需要 3.10+；本项目用 write_text_lf() 代替。
+
+        用 AST 而不是字符串匹配：这些 API 名字本身会出现在文档字符串和
+        注释里，纯文本扫描会把说明文字误报成违规。
+        """
+        import ast
+
+        offenders = []
+        for p in self._py_files():
+            tree = ast.parse(p.read_text(encoding="utf-8"), filename=str(p))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                fn = node.func
+                if not (isinstance(fn, ast.Attribute) and fn.attr == "write_text"):
+                    continue
+                if any(kw.arg == "newline" for kw in node.keywords):
+                    offenders.append(f"{p.relative_to(self.REPO)}:{node.lineno}")
+        self.assertEqual(
+            offenders, [],
+            f"使用了 Python 3.10+ 才支持的 Path.write_text(newline=)：{offenders}",
+        )
+
+    def test_scripts_parse_under_min_version_syntax(self):
+        """至少保证脚本能被 AST 解析（语法层面不依赖新版本）。"""
+        import ast
+
+        for p in self._py_files():
+            with self.subTest(file=str(p.relative_to(self.REPO))):
+                ast.parse(p.read_text(encoding="utf-8"), filename=str(p), feature_version=(3, self.MIN_MINOR))
+
+    def test_files_declare_future_annotations(self):
+        """`X | None` / `list[str]` 这类注解在 3.8 需要 future import。"""
+        offenders = []
+        for p in self._py_files():
+            text = p.read_text(encoding="utf-8")
+            uses_modern = re.search(r"(->|:)\s*(?:[\w\[\]]+\s*\|\s*None|list\[|dict\[|tuple\[)", text)
+            has_future = "from __future__ import annotations" in text
+            if uses_modern and not has_future:
+                offenders.append(str(p.relative_to(self.REPO)))
+        self.assertEqual(offenders, [], f"缺少 from __future__ import annotations：{offenders}")
 
 
 if __name__ == "__main__":

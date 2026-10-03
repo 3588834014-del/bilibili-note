@@ -14,6 +14,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        # 3.8 已 EOL（2024-10），这里从声明的最低版本 3.8 开始测，
+        # 以验证 pyproject 的 requires-python 不是空话。
         python-version: ["3.8", "3.10", "3.12"]
 
     steps:

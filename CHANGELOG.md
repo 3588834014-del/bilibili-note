@@ -45,3 +45,8 @@
   现在改为：解析 `--list-subs` 表格（只认表头之后的行），并在清单为空
   （B站对密集请求会临时限流）时**按优先级逐个语言真下载探测**，而不是直接放弃。
 - `ytdlp_meta` 原先不带 cookie 请求元数据；B站对未登录请求的响应不稳定，现改为带 cookie。
+- **`requires-python = ">=3.8"` 曾是假的。** `Path.write_text(..., newline=)` 是
+  Python 3.10 才加入的参数，在 3.8 上直接 `TypeError`，意味着声明的最低版本根本跑不起来。
+  现改用内部 `write_text_lf()`（基于 `open(newline="\n")`，3.8 起可用）统一写文件。
+  这个 bug 由首次 CI 推送暴露，并新增 `TestPython38Compatibility` 静态守卫
+  （AST 扫描 `write_text(newline=)` + 按最低版本做语法解析）防止复发。

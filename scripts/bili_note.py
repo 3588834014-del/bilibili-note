@@ -216,8 +216,20 @@ def normalize_cookies(src: Path, dst: Path) -> int:
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     body = "# Netscape HTTP Cookie File\n" + "\n".join(rows.values()) + "\n"
-    dst.write_text(body, encoding="utf-8", newline="\n")
+    write_text_lf(dst, body)
     return len(rows)
+
+
+def write_text_lf(path: Path, text: str) -> None:
+    """以 UTF-8 + LF 写文本，兼容 Python 3.8。
+
+    `Path.write_text(..., newline=)` 是 Python 3.10 才加的；本 skill 声明支持
+    3.8+，所以这里退回 `open()` —— `open(newline="\\n")` 从 3.8 起就可用。
+    统一走这个函数可以保证任何平台上产物都是 LF、无 BOM。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
 
 
 def cookie_has_login(path: Path) -> bool:
@@ -466,9 +478,7 @@ def cmd_fetch(args) -> int:
         "subtitle_text": segments_to_text(segs),
         "segments": segs,
     }
-    (work / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    write_text_lf(work / "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
     log(f"✓ manifest：{work / 'manifest.json'}")
     return 0
 
@@ -612,7 +622,7 @@ def cmd_write(args) -> int:
         if other and other.group(1) != m["bvid"]:
             path = note_dir / f"B站 {sanitize_filename(m['title'])} {m['bvid']}.md"
 
-    path.write_text(build_note(m, summary, captured), encoding="utf-8", newline="\n")
+    write_text_lf(path, build_note(m, summary, captured))
     log(f"✓ 已写入笔记：{path}")
     if not summary:
         log("  → 这是草稿（status: draft）。摘要/要点/总结/标签待补全。")
@@ -630,10 +640,7 @@ def cmd_write(args) -> int:
                 log(f"! {ppath} 不是合法 JSON，将重建")
         if m["bvid"] not in seen:
             seen.append(m["bvid"])
-            ppath.parent.mkdir(parents=True, exist_ok=True)
-            ppath.write_text(
-                json.dumps(seen, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            write_text_lf(ppath, json.dumps(seen, ensure_ascii=False, indent=2))
             log(f"✓ 去重记录已更新：{ppath}（{len(seen)} 条）")
 
     print(path)
