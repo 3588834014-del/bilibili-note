@@ -91,12 +91,21 @@ def norm_url(url_or_bvid: str) -> str:
       - 要点跳链会被拼成
         `.../video/BVxxx/?spm_id_from=...&vd_source=.../?t=23s`
         出现两个 `?`，B站解析不了。
+
+    坑位三：`?p=N` **必须保留**。它是分 P 选择器，不是追踪参数——
+    yt-dlp 拿到 `...BVxxx?p=6` 会只取第 6 个分 P。剥掉它会让多 P 视频
+    静默退化成第 1 个分 P，标题、时长、字幕全部指向错误的视频。
     """
     raw = url_or_bvid.strip()
     if raw.startswith("http"):
         m = re.search(r"(?:bilibili\.com/video/|b23\.tv/)(BV[0-9A-Za-z]+)", raw)
         if m:
-            return f"https://www.bilibili.com/video/{m.group(1)}"
+            bvid = m.group(1)
+            page = re.search(r"[?&]p=(\d+)", raw)
+            return (
+                f"https://www.bilibili.com/video/{bvid}?p={page.group(1)}"
+                if page else f"https://www.bilibili.com/video/{bvid}"
+            )
         # 不是可识别的视频页链接：原样返回，交给 yt-dlp 判断
         return raw
     return f"https://www.bilibili.com/video/{bvid_of(raw)}"
@@ -698,6 +707,18 @@ def cmd_verify(args) -> int:
         for ts, link in bullets:
             if "?t=" not in link:
                 problems.append(f"要点跳链缺 ?t= 参数：{link}")
+
+        # 超过 99 分钟后要点标签是 3 位分钟（`[123:49]`）。这是与语料一致的
+        # 正确输出，但下游校验器的正则 `\[[0-9]{2}:[0-9]{2}\]` 只认 2 位，
+        # 会把这类笔记判成「要点不足」。这里放行但必须提示，否则下游静默失败。
+        long_labels = [ts for ts, _ in bullets if len(ts.split(":")[0]) > 2]
+        if long_labels:
+            log(
+                f"! 注意：本笔记含 {len(long_labels)} 个 3 位分钟标签"
+                f"（如 [{long_labels[0]}]），来自超 99 分钟的视频。\n"
+                "  下游归档管线若用 ^\\|- \\[[0-9]{2}:[0-9]{2}\\] 计要点，"
+                "会漏掉这些行；需把 {2} 放宽为 {1,3}。"
+            )
 
     if "## 原始字幕" not in text:
         problems.append("缺少「## 原始字幕」章节")
