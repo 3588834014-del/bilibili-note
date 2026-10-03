@@ -175,6 +175,40 @@ class TestSubprocessSmoke(unittest.TestCase):
     def test_missing_subcommand_exits_nonzero(self):
         self.assertNotEqual(self._run().returncode, 0)
 
+    def _run_with_encoding(self, *args, encoding="cp1252", timeout=60, drop_env=()):
+        import os
+        env = dict(os.environ)
+        env["PYTHONIOENCODING"] = encoding
+        for k in drop_env:
+            env.pop(k, None)
+        return subprocess.run(
+            [sys.executable, "-m", "bili_note_cli.cli", *args],
+            capture_output=True, encoding="utf-8", errors="replace",
+            cwd=str(REPO), timeout=timeout, env=env,
+        )
+
+    def test_chinese_output_survives_a_legacy_console_encoding(self):
+        """回归：Windows 控制台默认 cp1252/cp936，打印中文帮助会抛 UnicodeEncodeError。
+
+        这个 bug 只在「pip 装好后在 Windows 上跑控制台脚本」这一条路径出现——
+        因为编码修正原来放在 `if __name__ == "__main__"` 里，而
+        [project.scripts] 入口点只调用 main()，模块底部那块永远不执行。
+        CI 的 package job 抓到的就是这个。
+
+        这里把子进程 IO 编码强制成 cp1252 来复现：修复后 CLI 会主动把
+        stdout/stderr 切到 UTF-8，所以仍能正常输出中文。
+        """
+        r = self._run_with_encoding("--help")
+        self.assertEqual(r.returncode, 0, f"cp1252 控制台下 CLI 崩了：{r.stderr}")
+        self.assertNotIn("UnicodeEncodeError", r.stderr or "")
+        self.assertIn("note", r.stdout)
+
+    def test_error_path_survives_a_legacy_console_encoding(self):
+        """错误分支也打印中文（消息里带 ✗），同样不能炸。"""
+        r = self._run_with_encoding("fetch", "BV1TEST00001", timeout=120,
+                                    drop_env=("BILI_COOKIES",))
+        self.assertNotIn("UnicodeEncodeError", (r.stderr or "") + (r.stdout or ""))
+
 
 class TestInstallScript(unittest.TestCase):
     """skill 安装脚本：只装运行需要的源文件，不装构建产物。"""

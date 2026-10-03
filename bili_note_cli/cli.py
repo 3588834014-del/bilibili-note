@@ -123,7 +123,30 @@ def build_parser(core) -> argparse.ArgumentParser:
     return ap
 
 
+def _force_utf8_stdio() -> None:
+    """把 stdout/stderr 切到 UTF-8。
+
+    **必须放在 main() 里，不能只放在 `if __name__ == "__main__"`。**
+    控制台脚本（pyproject 的 [project.scripts]）会调用 `main()`，但不会执行
+    模块底部的 `__main__` 块；而 Windows 的默认控制台编码是 cp1252/cp936，
+    打印中文帮助或错误信息时直接抛 UnicodeEncodeError：
+
+        UnicodeEncodeError: 'charmap' codec can't encode character '\\u628a'
+
+    这个 bug 只在"真正 pip 安装后在 Windows 上跑"这一条路径上出现，
+    所以是 CI 的 package job 抓到的，仓库内直接跑和 Linux 都正常。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                # 流被重定向/已关闭时 reconfigure 可能失败，不该因此让 CLI 挂掉
+                pass
+
+
 def main(argv=None) -> int:
+    _force_utf8_stdio()
     core = _load_core()
     ap = build_parser(core)
     args = ap.parse_args(argv)
@@ -150,8 +173,4 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     sys.exit(main())

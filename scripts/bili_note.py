@@ -1030,7 +1030,24 @@ def cmd_selftest(args) -> int:
 # ---------------------------------------------------------------- main
 
 
+def force_utf8_stdio() -> None:
+    """把 stdout/stderr 切到 UTF-8。
+
+    本模块的中文输出（帮助、进度、错误）在 Windows 默认控制台编码
+    （cp1252 / cp936）下会抛 UnicodeEncodeError。**必须由 main() 调用**，
+    不能只放在 `if __name__ == "__main__"` —— 被当模块导入后再调 main()
+    （CLI 就是这条路）时，模块底部那块不会执行。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv=None) -> int:
+    force_utf8_stdio()
     ap = argparse.ArgumentParser(description="B站视频 -> Obsidian 笔记（确定性环节）")
     ap.add_argument("--version", action="version", version=__version__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1069,8 +1086,4 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     sys.exit(main())

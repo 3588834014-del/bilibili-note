@@ -27,12 +27,29 @@
 
 ### 修正
 
+- **Windows 控制台跑 `bili-note --help` 直接崩。** 中文输出在 cp1252/cp936 下抛
+  `UnicodeEncodeError: 'charmap' codec can't encode character '\u628a'`。
+  根因：编码修正原来写在 `if __name__ == "__main__"` 里，而 `[project.scripts]`
+  入口点只调用 `main()`，模块底部那块永远不执行。现改为由 `main()` 主动调用
+  `force_utf8_stdio()`。这个 bug 只在「pip 装好后在 Windows 上跑控制台脚本」
+  这一条路径出现——仓库内直接跑和 Linux 都正常，是 CI 新增的 `package` job 抓到的。
 - `scripts/install.py` 会把 `pip install` 生成的 `*.egg-info` 一起复制进 skill 目录。
   现在过滤构建产物（`*.egg-info` / `*.pyc` / `build` / `dist` 等）。
 - 仓库卫生检查会把构建产物也当成源码来查 CRLF，导致「构建过之后再跑测试」必然失败。
   现在跳过 `.gitignore` 已排除的生成目录。
 - CHANGELOG 内部矛盾：「关键技术点」一节写"剥掉 `?p=N`"，但「修正」一节写"现在保留 `?p=`"。
   按现行行为统一为**保留**。
+
+### 归属修正
+
+- 早期 7 条 commit 的作者是占位身份 `bilibili-note <noreply@example.com>`，
+  GitHub 按邮箱匹配把归属算到了一个无关的第三方账号（PyGuy2）上。
+  现已把全部历史重写为
+  `3588834014-del <336991437+3588834014-del@users.noreply.github.com>`，
+  author 与 committer 均已修正，**文件树与提交信息零变化**。
+  起因是初始化仓库时擅自编了一个占位邮箱，而不是先确认真实 git 身份。
+  用 `<id>+<login>@users.noreply.github.com` 是刻意的：既能正确归属，
+  又不会把真实邮箱暴露在公开的 commit history 里。
 
 ## [1.0.0] - 2026-10-03
 
