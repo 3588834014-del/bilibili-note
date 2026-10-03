@@ -18,8 +18,13 @@ from pathlib import Path
 
 SKILL_NAME = "bilibili-note"
 # 运行 skill 只需要 SKILL.md、docs/、scripts/。tests/ 是开发用的，不装。
+# bili_note_cli/ 是 CLI 入口点，dsh skill 用不到（skill 直接调 scripts/bili_note.py）。
 INCLUDE = ["SKILL.md", "docs", "scripts"]
-SKIP_NAMES = {"__pycache__", ".git", ".github", "tests", ".pytest_cache"}
+SKIP_NAMES = {"__pycache__", ".git", ".github", "tests", ".pytest_cache",
+              ".ruff_cache", ".mypy_cache", "build", "dist", "node_modules",
+              ".venv", "venv"}
+# 构建产物（pip install 会生成），不属于要装的源码
+SKIP_SUFFIXES = (".egg-info", ".pyc", ".pyo")
 
 
 def find_source() -> Path:
@@ -43,6 +48,11 @@ def iter_files(root: Path):
             if path.is_dir():
                 continue
             if any(part in SKIP_NAMES for part in path.parts):
+                continue
+            # 构建产物：pip install / egg-info / 编译缓存，都不是 skill 运行需要的
+            if any(part.endswith(SKIP_SUFFIXES) for part in path.parts):
+                continue
+            if path.suffix in (".pyc", ".pyo"):
                 continue
             yield path
 

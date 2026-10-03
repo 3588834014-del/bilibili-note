@@ -1,190 +1,205 @@
 # bilibili-note
 
-> 把 B站视频链接变成 Obsidian 结构化笔记的 [DeepSeek Harness](https://github.com/deepseek-ai) skill。
-> **只拉字幕，绝不下载视频。**
+> **Turn Bilibili videos into structured Obsidian notes — subtitles only, never the video.**
+>
+> 中文说明见 [README.zh-CN.md](README.zh-CN.md)。
 
 [![CI](https://github.com/3588834014-del/bilibili-note/actions/workflows/ci.yml/badge.svg)](https://github.com/3588834014-del/bilibili-note/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
 
----
+A small CLI — plus an optional agent skill — that turns a Bilibili video into a structured
+Markdown note in your Obsidian vault. It downloads **only the subtitle file** (`--skip-download`),
+cleans the timestamps, and writes a note with YAML front matter, a summary section, bullet
+points carrying clickable `?t=` jump links, and the full transcript collapsed at the bottom.
 
-## 它解决什么
+The repetitive half (fetch, parse, format, verify) is a script. The judgment half (summary,
+key points, tags) is left as a documented contract you or an agent fill in.
 
-把一条 B站视频链接固化成 vault 里的结构化笔记。反复执行的机械环节交给脚本，
-需要判断的内容交给 agent，两边不混：
-
-```mermaid
-flowchart LR
-    A[B站链接] --> B["fetch<br/>yt-dlp 取元数据 + ai-zh 字幕"]
-    B --> C["manifest.json<br/>字幕全文 + 秒级段落"]
-    C --> D["agent 生成判断性内容<br/>摘要 / 要点 / 总结 / 标签"]
-    D --> E["write<br/>组装 + 写入 vault"]
-    E --> F["verify<br/>结构自检"]
+```
+Bilibili URL ──▶ fetch ──▶ manifest.json ──▶ [you / agent] ──▶ content.json ──▶ write ──▶ note.md
+                  │         subtitles +                      summary, bullets,       │
+                  │         timestamped segments             tags                    │
+                  └── yt-dlp, subtitles only ────────────────────────────────────────┘
 ```
 
-| 环节 | 谁做 | 怎么保证可复现 |
-|------|------|----------------|
-| 下载、解析、格式化、落盘、自检 | 脚本 | 命令与参数写死 |
-| 一句话摘要、核心要点、总结、标签 | agent | SKILL.md 里的输入输出规约 |
+## Why this one
 
-**它不做什么**：不写逆向/爬虫代码（下载只走 yt-dlp），不碰签名算法与私有接口，
-不下载视频或音频，字幕缺失时跳过而不是硬造内容。
+- **Subtitles only.** `--skip-download` is mandatory, and the tool verifies no media file
+  (`.mp4/.flv/.m4a/.part`) landed in the working directory. No reverse-engineering, no
+  private APIs — just `yt-dlp`.
+- **Multi-part videos are merged.** For an anthology (B站 分P 合集) it fetches every part's
+  subtitles and rebases the timestamps onto one continuous timeline. Verified on a real
+  6-part anthology: **2:10:32 → 2807 segments / 33214 characters**, matching an independent
+  concatenation segment-for-segment. A part with no subtitles is skipped **while keeping its
+  time slot**, so later timestamps stay correct.
+- **It refuses to produce garbage.** If two parts yield byte-identical subtitles, it errors out
+  instead of silently emitting a note whose content is one part repeated N times. (That exact
+  bug shipped during development and was caught by this guard.)
+- **No subtitles? It skips and tells you.** It never fabricates content or writes an empty note.
 
----
+## Install
 
-## 安装
+No dependencies — standard library only. `yt-dlp` is an **external command**, not a Python package.
 
-仓库本身就是 skill 目录，复制到 dsh 的用户 skill 路径即可。无构建、无第三方依赖。
+### As a CLI
 
 ```bash
-# Linux / macOS / Git Bash
+pipx install git+https://github.com/3588834014-del/bilibili-note.git
+# or
 git clone https://github.com/3588834014-del/bilibili-note.git
-mkdir -p ~/.agents/skills
-cp -r bilibili-note ~/.agents/skills/
+cd bilibili-note && python -m pip install .
 ```
 
-```powershell
-# Windows PowerShell
-git clone https://github.com/3588834014-del/bilibili-note.git
-Copy-Item -Recurse -Force .\bilibili-note "$env:USERPROFILE\.agents\skills\bilibili-note"
-```
-
-或用仓库里的安装脚本（自动跳过测试与缓存目录）：
+Then:
 
 ```bash
-python scripts/install.py            # 装到 ~/.agents/skills/bilibili-note
-python scripts/install.py --dry-run  # 只看会复制什么
+bili-note --version
+bili-note note "https://www.bilibili.com/video/BVxxxxxxxxx" \
+    --note-dir ~/MyVault/Sources/Videos
 ```
 
-装好后 dsh 会把它列进 skill 目录，用「B站笔记」之类的触发词即可唤起。
-
-### 前置条件
-
-| 依赖 | 说明 |
-|------|------|
-| `yt-dlp` | **唯一允许的下载通道**。`pip install -U yt-dlp` |
-| B站登录 cookie | AI 字幕需要登录态，见下节 |
-| Python 3.8+ | 只用标准库 |
-
----
-
-## 配置 cookie（必做）
-
-B站的 AI 字幕接口需要登录态，所以必须先导出 cookie：
-
-1. 浏览器安装扩展 **Get cookies.txt LOCALLY**
-2. 打开并登录 [bilibili.com](https://www.bilibili.com)
-3. 点扩展图标 → Export → 导出 `cookies.txt`
-4. 放到**当前工作目录**，或用环境变量指定：
+### As an agent skill (DeepSeek Harness)
 
 ```bash
-export BILI_COOKIES=/path/to/cookies.txt     # Linux / macOS
-$env:BILI_COOKIES = "C:\path\cookies.txt"    # PowerShell
+python scripts/install.py            # installs to ~/.agents/skills/bilibili-note
+python scripts/install.py --dry-run  # show what would be copied
 ```
 
-> 只有 UP 主自行上传了字幕的视频才能跳过这一步。
+The skill then appears in the dsh skill catalog and can be triggered with phrases like
+「B站笔记」. Installing the skill does **not** install the CLI and vice versa; they share the
+same implementation (`scripts/bili_note.py`).
 
-### ⚠️ 为什么不能把导出文件直接喂给 yt-dlp
+### Requirements
 
-这是本仓库最值得知道的一个坑。该扩展导出的行长这样：
+| Requirement | Notes |
+|---|---|
+| Python 3.8+ | stdlib only |
+| [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) | `pip install -U yt-dlp` — the **only** download channel |
+| Bilibili login cookies | Required for AI subtitles; see below |
+
+## Cookies (required)
+
+Bilibili's AI-subtitle endpoint needs an authenticated session.
+
+1. Install the **Get cookies.txt LOCALLY** browser extension.
+2. Log into [bilibili.com](https://www.bilibili.com).
+3. Export `cookies.txt`.
+4. Put it in your working directory, or point at it:
+
+```bash
+export BILI_COOKIES=/path/to/cookies.txt      # Linux / macOS
+$env:BILI_COOKIES = "C:\path\cookies.txt"     # PowerShell
+```
+
+Videos where the uploader supplied their own subtitles may work without this.
+
+### ⚠️ Why you can't feed the export straight to yt-dlp
+
+This is the single most surprising thing in this repository. That extension writes lines like:
 
 ```
 .bilibili.com	FALSE	/	FALSE	1819635894	SESSDATA	xxxxx
 ```
 
-domain 带前导点 `.`，但第 2 列的 host-only 标志是 `FALSE`。Python 的
-`http.cookiejar` 内部有一条断言：
+The domain carries a leading dot, yet the host-only flag in column 2 is `FALSE`. Python's
+`http.cookiejar` asserts:
 
 ```python
 assert domain_specified == initial_dot
 ```
 
-两者不一致 → 抛 `LoadError` → yt-dlp 直接拒绝加载整个文件：
+The mismatch raises, and yt-dlp refuses to load the **entire file**:
 
 ```
 ERROR: invalid Netscape format cookies file '...': '.bilibili.com\tFALSE\t/...'
 ```
 
-结果是**字幕永远拿不到，而报错看起来像"这个视频没有字幕"**。
-解法是归一化：去掉 domain 前导点并把标志置为 `FALSE`（host-only cookie
-仍然会发给 `api.bilibili.com` 等子域，登录态不丢）。`bili_note.py` 的
-`normalize_cookies()` 做的就是这个，附带过滤出 bilibili 域（导出文件通常混有
-其他站点的 cookie）和按 domain/path/name 去重。
+The practical symptom is nasty: subtitles never arrive, and the error looks like
+*"this video has no subtitles."* The fix is normalization — strip the leading dot and set the
+flag to `FALSE` (a host-only cookie is still sent to `api.bilibili.com` and friends, so the
+session is preserved). `normalize_cookies()` does this, plus filters to the `bilibili` domain
+and de-duplicates by `domain/path/name`. You never have to do it by hand.
 
----
+## Output directory
 
-## 输出目录
-
-脚本不内置任何默认库路径——不同机器的 vault 位置不同，硬编码一个"看起来对"的
-路径只会在别处静默创建出空目录。二选一：
+Nothing is hard-coded. Pick either:
 
 ```bash
-# 方式一：显式传参
-python scripts/bili_note.py write --work ./work --note-dir "<vault>/Sources/Videos"
+bili-note note "<URL>" --note-dir "<vault>/Sources/Videos"    # explicit
 
-# 方式二：环境变量
-export BILI_VAULT="/path/to/MyVault"
-export BILI_TARGET_DIR="Sources/Videos"      # 可选，默认值
+export BILI_VAULT="/path/to/MyVault"                           # or environment
+export BILI_TARGET_DIR="Sources/Videos"                        # optional, this is the default
 ```
 
----
+> Deliberately no built-in default vault path: hard-coding one "looks right" path silently
+> creates an empty directory on someone else's machine, and notes vanish into it.
 
-## 用法
+## Usage
 
 ```bash
-# 1. 取元数据 + 字幕（只拉字幕，不拉视频）
-python scripts/bili_note.py fetch "https://www.bilibili.com/video/BVxxxxxxxxx" --out ./work
+# fetch metadata + subtitles (subtitles only, never the video)
+bili-note fetch "<URL>" --out ./work
 
-# 2. agent 读 work/manifest.json 生成判断性内容，写成 summary.json
+# write the note straight from an existing work dir
+bili-note write --work ./work --note-dir "<vault>/Sources/Videos" --content-file content.json
 
-# 3. 组装并写入笔记（不给 --summary-file 则产出草稿）
-python scripts/bili_note.py write \
-    --work ./work \
-    --note-dir "<vault>/Sources/Videos" \
-    --summary-file summary.json \
-    --processed "<vault>/Sources/Videos/.processed.json"
+# one shot: fetch + write
+bili-note note "<URL>" --note-dir "<vault>/Sources/Videos" [--content-file content.json]
 
-# 4. 结构自检
-python scripts/bili_note.py verify --note "<笔记路径>"
+# structural self-check
+bili-note verify --note "<note path>"
+
+# environment self-check: cookies / yt-dlp / output dir (no network)
+bili-note selftest
 ```
 
-`fetch` 会打印每个环节的结果：
+`selftest` answers the question you will actually ask — *"why did I get no subtitles?"* —
+before you blame the code:
 
 ```
-✓ cookie 归一化：…（33 条 bilibili 域 cookie）
-✓ 元数据：视频标题（UP主）｜时长 12:34
-  可用字幕语言：danmaku, ai-zh, ai-en
-✓ 字幕：ai-zh，134 段，1625 字
-✓ manifest：/path/to/work/manifest.json
+  ✓ cookie file: /home/me/cookies.txt
+  ✓ has SESSDATA login: ...
+  ✓ yt-dlp: /usr/local/bin/yt-dlp
+  ✗ output dir: not configured (pass --note-dir, or set BILI_VAULT/BILI_TARGET_DIR)
 ```
 
-### summary.json 的形状
+`fetch` walks you through each step:
+
+```
+✓ cookie normalized: ... (33 bilibili cookies)
+✓ metadata: <title> (<uploader>) | 12:34
+  subtitle languages: danmaku, ai-zh, ai-en
+✓ subtitles: ai-zh, 134 segments, 1625 chars
+✓ manifest: /path/to/work/manifest.json
+```
+
+### `content.json` — the judgment half
 
 ```json
 {
-  "summary": "一句话摘要（60-120 字，结论前置）",
-  "body": "总结正文（200-400 字，讲清论证链条与结论）",
+  "summary": "One sentence, 60-120 chars, conclusion first.",
+  "body": "200-400 chars covering the argument and the conclusion.",
   "tags": ["认知", "人文"],
-  "cards": ["CC_示例"],
+  "cards": ["CC_example"],
   "bullets": [
-    {"time": 0,  "title": "小标题", "text": "一句话说明"},
-    {"time": 23, "title": "小标题", "text": "一句话说明"}
+    {"time": 0,  "title": "Short heading", "text": "One sentence."},
+    {"time": 23, "title": "Short heading", "text": "One sentence."}
   ]
 }
 ```
 
-`time` 填**秒数**，脚本负责渲染成 `MM:SS` 和跳转链接。`title` 和 `cards` 可省略。
+`time` is **seconds**; the tool renders the `MM:SS` label and the jump link for you.
+`title` and `cards` are optional. Omit `--content-file` entirely to get a draft note with
+placeholders and `status: draft`.
 
----
-
-## 产出的笔记长什么样
+## What a note looks like
 
 ```markdown
 ---
-title: 视频标题
+title: Video title
 source: https://www.bilibili.com/video/BVxxxxxxxxx
-author: UP主
+author: Uploader
 captured: 2026-01-01
 duration: "12:34"
 type: video-note
@@ -193,90 +208,75 @@ needs_summary: false
 tags: ["认知", "人文"]
 ---
 > [!info] 视频信息
-> **UP主**：UP主 ｜ **时长**：12:34 ｜ [原视频](https://www.bilibili.com/video/BVxxxxxxxxx)
+> **UP主**：Uploader ｜ **时长**：12:34 ｜ [原视频](https://www.bilibili.com/video/BVxxxxxxxxx)
 
 ## 一句话摘要
-
-……
-
+…
 ## 核心要点
-
-|- [00:00](https://www.bilibili.com/video/BVxxxxxxxxx/?t=0s) **小标题**：说明
-|- [00:23](https://www.bilibili.com/video/BVxxxxxxxxx/?t=23s) **小标题**：说明
-
+|- [00:00](https://www.bilibili.com/video/BVxxxxxxxxx/?t=0s) **Heading**：One sentence.
+|- [00:23](https://www.bilibili.com/video/BVxxxxxxxxx/?t=23s) **Heading**：One sentence.
 ## 总结
-
-……
-
+…
 ## 笔记标签
-
 认知 ｜ 人文
-
-## 相关卡片
-
-- [[CC_示例]]
-
 ## 原始字幕
-
 > [!quote]- 完整字幕（点击展开）
-> ……（已清理时间码与序号的纯文本）
+> …cleaned transcript, no timestamps or indices
 ```
 
-> 要点行的 `|- ` 行首看着像坏掉的表格，但它是**故意的**——下游归档管线的校验器
-> 只认这个形状。原因和全部格式约定见 [docs/FORMAT.md](docs/FORMAT.md)。
+> The `|- ` prefix on bullet lines looks like a broken table row, and it is — deliberately.
+> A downstream archive checker matches `^\|- \[[0-9]{2}:[0-9]{2}\]`, so standard `- ` list
+> syntax would be rejected. All format constraints and their reasons live in
+> [docs/FORMAT.md](docs/FORMAT.md).
 
----
+## Tests
 
-## 测试
-
-无需网络、无需 cookie：
+No network, no cookies required:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-86 个测试，覆盖 SRT 解析与时间戳清理（含 LF/CRLF/BOM、多行 cue、超 1 小时、
-HTML 与 ASS 标签、含 `<` `>` 的正文、零宽字符、重复句、空 cue）、两种时间戳
-格式化、要点行与下游管线的契约、草稿字面量契约、cookie 归一化、
-URL 规范化（含分 P 参数与追踪参数）、多 P 合集时间戳平移与字幕文件选取、
-落盘与去重、`verify` 的正反用例、Python 最低版本兼容性守卫、仓库卫生。
+**108 tests** covering SRT parsing and timestamp cleanup (LF/CRLF/BOM, multi-line cues,
+over-1-hour offsets, HTML and ASS tags, literal `<` `>` in text, zero-width characters,
+duplicate rolling captions, empty cues), both timestamp formats, bullet-line contract,
+draft-literal contract, cookie normalization, URL normalization (tracking params and `?p=`),
+anthology timestamp rebasing and subtitle-file selection, duplicate-part detection, on-disk
+write and de-duplication, `verify` positive/negative cases, the CLI wiring, Python
+minimum-version compatibility guards, and repository hygiene.
 
-CI 在 Linux + Windows × Python 3.8/3.10/3.12 上跑同一套测试，见
-[.github/workflows/ci.yml](.github/workflows/ci.yml)。
+CI runs the same suite on Linux + Windows × Python 3.8/3.10/3.12 — see
+[.github/workflows/ci.yml](.github/workflows/ci.yml).
 
----
+## Known limitations
 
-## 已知限制
+- **Bilibili only.** Other yt-dlp-supported sites are out of scope.
+- **Multi-part anthologies are merged and take a while.** Two requests per part; a 2-hour
+  6-part anthology takes roughly 2 minutes. Pass `?p=6` to grab a single part instead.
+  Jump links point at `{anthology URL}/?t={cumulative}s`, so they are exact when playing the
+  anthology as a whole but **not** when you open one part standalone. That is inherent to
+  merging, not a fixable bug.
+- **Depends on Bilibili's AI subtitles.** Videos without subtitles (and without
+  uploader-supplied ones) are skipped. No speech-to-text — this tool deliberately does not
+  pull in ffmpeg/whisper.
+- **AI subtitles contain recognition errors.** `ai-zh` is machine-generated and regularly
+  mis-hears or drops words. The rule this project follows: quotes are copied verbatim and
+  **not** silently corrected; anything recoverable from context is paraphrased *without*
+  quote marks; anything unintelligible is dropped rather than guessed. See `SKILL.md` §2.6.
+- **Timestamps over 1 hour use total minutes** (`[93:31]`), not `H:MM:SS` — deliberate, to
+  match the existing corpus.
+- ⚠️ **Videos longer than 99 minutes trip a downstream checker.** Because bullet labels are
+  total minutes, labels past 100 minutes are **3 digits** (`[100:00]`, `[123:49]`). A validator
+  using `^\|- \[[0-9]{2}:[0-9]{2}\]` only accepts 2 digits and will under-count, flagging long
+  videos as "too few bullet points." Measured on the 2:10:32 anthology: **24%** of the timeline
+  has 3-digit minutes, first at 100:00. Fix is to widen `{2}` to `{1,3}` downstream; this
+  repo's checker does that. `verify` passes such notes but prints a warning.
 
-- **只支持 B站**。yt-dlp 支持的其他站点不在设计范围内。
-- **多 P 合集自动合并**。yt-dlp 对 `...BVxxx` 默认只取 p1；本 skill 会识别合集并
-  逐分 P 抓字幕、按累计时长平移时间戳拼成连续时间轴（实测 6 分 P / 2:10:32 的合集
-  得到 2807 段）。传 `...BVxxx?p=6` 则只取该分 P。抓取较慢（每分 P 两次请求），
-  2 小时合集约 2 分钟；某分 P 无字幕时跳过但保留其时间占位，时间轴不错位。
-- **依赖 B站的 AI 字幕**。视频没有字幕（且 UP 主未上传）时跳过，不做语音转写。
-  视频若需转写，属另一个工具链，本 skill 刻意不引入 ffmpeg/whisper 依赖。
-- **AI 字幕有识别错误**。`ai-zh` 由语音识别产生，常有错字漏字。处理边界是：
-  引语照抄识别结果不"顺手改对"、能合理还原的按语义概括而不写成引号引语、
-  完全不可解的直接丢弃不猜。详见 SKILL.md §2.6。
-- **超 1 小时的要点时间戳**用总分钟数（`[93:31]`），刻意不做小时进位——这是与
-  语料对齐的结果，不是 bug。
-- ⚠️ **超过 99 分钟的视频会触发下游校验器漏判。** 要点标签是总分钟数，所以
-  100 分钟之后的标签是 **3 位数**（`[100:00]`、`[123:49]`）；语料里唯一的 3 位
-  标签就是这么来的。但下游校验器的正则是 `^\|- \[[0-9]{2}:[0-9]{2}\]`，
-  **只认 2 位分钟**，于是长视频笔记会被判「要点不足」。实测：2:10:32 的合集里
-  **24%** 的时刻分钟数是 3 位，最早出现在 100:00。本仓库的 `bilibili2obsidian`
-  侧工具已把该正则放宽为 `{1,3}`；`verify` 对这类笔记**放行但打印警告**。
+## Contributing
 
-
----
-
-## 贡献
-
-欢迎 issue 和 PR。改格式相关的东西之前请先读 [docs/FORMAT.md](docs/FORMAT.md)，
-并确保 `python -m unittest discover -s tests` 仍然全绿——测试套件里
-`TestDownstreamContract` 就是拿来钉死这些契约的。
-
----
+Issues and PRs welcome. Read [docs/FORMAT.md](docs/FORMAT.md) before touching anything
+format-related, and keep `python -m unittest discover -s tests` green — `TestDownstreamContract`
+exists specifically to pin those contracts down.
 
 ## License
 

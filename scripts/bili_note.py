@@ -26,7 +26,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # ---------------------------------------------------------------- 常量
 
@@ -957,6 +957,76 @@ def cmd_verify(args) -> int:
         return 1
     log(f"✓ 自检通过：{path.name}（{len(bullets)} 条要点，{fm.get('status')}）")
     return 0
+# ---------------------------------------------------------------- selftest
+
+
+def collect_env_checks(cookies: Path | None, ytdlp: str | None,
+                       note_dir: Path | None, ytdlp_error: str = "") -> list[tuple]:
+    """环境自检结果：[(名称, 是否通过, 说明)]。
+
+    纯函数，方便测试；不做任何 I/O。
+    """
+    checks: list[tuple] = []
+    checks.append((
+        "cookie 文件",
+        cookies is not None,
+        str(cookies) if cookies else "未找到（设 BILI_COOKIES，或把 cookies.txt 放当前目录）",
+    ))
+    if cookies is not None:
+        checks.append((
+            "含 SESSDATA 登录态",
+            cookie_has_login(cookies),
+            "无 SESSDATA → B站的 AI 字幕拿不到（仅 UP 主上传的字幕可用）",
+        ))
+    checks.append((
+        "yt-dlp",
+        ytdlp is not None,
+        ytdlp or (ytdlp_error or "未找到，请 pip install -U yt-dlp"),
+    ))
+    checks.append((
+        "输出目录",
+        note_dir is not None,
+        str(note_dir) if note_dir else "未配置（传 --note-dir，或设 BILI_VAULT/BILI_TARGET_DIR）",
+    ))
+    return checks
+
+
+def cmd_selftest(args) -> int:
+    """环境自检：不联网，只确认跑起来需要的东西都在。
+
+    常见故障大多是环境问题而不是代码问题（yt-dlp 没装、cookie 过期、
+    输出目录没配对）。这个命令把这三件事一次说清，省得去猜"为什么没字幕"。
+    """
+    cookies = None
+    try:
+        cookies = resolve_cookies()
+    except BiliNoteError:
+        cookies = None
+
+    ytdlp: str | None = None
+    ytdlp_error = ""
+    try:
+        ytdlp = find_ytdlp()
+    except BiliNoteError as exc:
+        ytdlp_error = str(exc)
+
+    note_dir: Path | None = None
+    try:
+        note_dir = resolve_note_dir(args.note_dir)
+    except BiliNoteError:
+        note_dir = None
+
+    checks = collect_env_checks(cookies, ytdlp, note_dir, ytdlp_error)
+    for name, good, detail in checks:
+        log(f"  {'✓' if good else '✗'} {name}：{detail}")
+
+    if all(good for _, good, _ in checks):
+        log("✓ 环境自检通过")
+        return 0
+    log("✗ 环境自检未通过（见上）")
+    return 1
+
+
 # ---------------------------------------------------------------- main
 
 
@@ -982,6 +1052,10 @@ def main(argv=None) -> int:
     p3.add_argument("--note", required=True, help="笔记路径")
     p3.add_argument("--min-bullets", type=int, default=5)
     p3.set_defaults(func=cmd_verify)
+
+    p4 = sub.add_parser("selftest", help="环境自检：确认 cookie / yt-dlp / 输出目录就位（不联网）")
+    p4.add_argument("--note-dir", help="顺便检查这个输出目录")
+    p4.set_defaults(func=cmd_selftest)
 
     args = ap.parse_args(argv)
     try:

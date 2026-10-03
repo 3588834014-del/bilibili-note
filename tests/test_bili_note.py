@@ -735,12 +735,19 @@ class TestRepoHygiene(unittest.TestCase):
 
     REPO = Path(__file__).resolve().parent.parent
 
+    # 构建/缓存产物不查：它们由工具生成（换行符不受本仓库控制），
+    # 且已被 .gitignore 排除，不属于要交付的源码。
+    SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".ruff_cache",
+                 ".mypy_cache", "build", "dist", "node_modules", ".venv", "venv"}
+
     def _tracked_text_files(self):
         for path in self.REPO.rglob("*"):
             if not path.is_file():
                 continue
             rel = path.relative_to(self.REPO)
-            if any(part in {".git", "__pycache__", ".pytest_cache"} for part in rel.parts):
+            if any(part in self.SKIP_DIRS for part in rel.parts):
+                continue
+            if any(part.endswith(".egg-info") for part in rel.parts):
                 continue
             if path.suffix in {".pyc", ".srt"}:
                 continue
