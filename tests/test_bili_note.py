@@ -643,5 +643,74 @@ class TestWriteNote(unittest.TestCase):
         self.assertTrue((tmp / "B站 测试标题 BV1TEST00001.md").is_file())
 
 
+class TestRepoHygiene(unittest.TestCase):
+    """仓库卫生：本项目全部产物要求 LF 换行，任何 CRLF 都是回归。
+
+    Git 在 Windows 上默认 autocrlf 会把文件转成 CRLF，而脚本以
+    newline="\\n" 写文件、测试也断言"无 CRLF"。.gitattributes 负责约束，
+    这里负责在 CI 上把违规抓出来。
+    """
+
+    REPO = Path(__file__).resolve().parent.parent
+
+    def _tracked_text_files(self):
+        for path in self.REPO.rglob("*"):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(self.REPO)
+            if any(part in {".git", "__pycache__", ".pytest_cache"} for part in rel.parts):
+                continue
+            if path.suffix in {".pyc", ".srt"}:
+                continue
+            yield rel, path
+
+    def test_no_crlf_in_repo_text_files(self):
+        offenders = []
+        for rel, path in self._tracked_text_files():
+            try:
+                if b"\r\n" in path.read_bytes():
+                    offenders.append(str(rel))
+            except OSError:
+                continue
+        self.assertEqual(offenders, [], f"以下文件含 CRLF 换行：{offenders}")
+
+    def test_no_bom_in_repo_text_files(self):
+        offenders = []
+        for rel, path in self._tracked_text_files():
+            try:
+                if path.read_bytes().startswith(b"\xef\xbb\xbf"):
+                    offenders.append(str(rel))
+            except OSError:
+                continue
+        self.assertEqual(offenders, [], f"以下文件含 BOM：{offenders}")
+
+    def test_license_and_docs_present(self):
+        for name in ("LICENSE", "README.md", "SKILL.md", "CHANGELOG.md",
+                     "docs/FORMAT.md", ".gitignore", ".gitattributes"):
+            with self.subTest(name=name):
+                self.assertTrue((self.REPO / name).is_file(), f"缺少 {name}")
+
+    def test_skill_frontmatter_is_valid(self):
+        """SKILL.md 必须有 name/description frontmatter，且 name 与目录名一致。"""
+        text = (self.REPO / "SKILL.md").read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("---\n"))
+        block = text.split("---\n", 2)[1]
+        keys = {}
+        for line in block.splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1)
+                keys[k.strip()] = v.strip()
+        self.assertIn("name", keys)
+        self.assertIn("description", keys)
+        self.assertEqual(keys["name"], "bilibili-note")
+        self.assertGreater(len(keys["description"]), 40, "description 太短，不利于触发词匹配")
+
+    def test_gitignore_covers_credentials(self):
+        text = (self.REPO / ".gitignore").read_text(encoding="utf-8")
+        for pattern in ("cookies.txt", "__pycache__", "*.srt"):
+            with self.subTest(pattern=pattern):
+                self.assertIn(pattern, text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
