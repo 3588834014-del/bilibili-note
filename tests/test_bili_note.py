@@ -875,5 +875,148 @@ class TestPython38Compatibility(unittest.TestCase):
         self.assertEqual(offenders, [], f"缺少 from __future__ import annotations：{offenders}")
 
 
+class TestSubtitleFilename(unittest.TestCase):
+    """yt-dlp 用 `-o "%(id)s"` 写出的字幕文件名。
+
+    回归背景：合集里 6 个分 P 的字幕文件是 `BV1x_p1.srt` … `BV1x_p6.srt`，
+    原先用 glob `BV1x*.srt` + `sorted()` 挑文件，永远挑到 `_p1`，
+    于是每个分 P 都读到同一份字幕 —— 合成成功、时长正确、内容全错。
+    """
+
+    def test_single_video(self):
+        self.assertEqual(
+            bn.sub_filename_stem("https://www.bilibili.com/video/BV1abc", "ai-zh"), "BV1abc")
+
+    def test_explicit_page_one_is_same_as_no_page(self):
+        self.assertEqual(
+            bn.sub_filename_stem("https://www.bilibili.com/video/BV1abc?p=1", "ai-zh"), "BV1abc")
+
+    def test_other_pages_get_suffix(self):
+        for page, want in [(2, "BV1abc_p2"), (6, "BV1abc_p6"), (12, "BV1abc_p12")]:
+            with self.subTest(page=page):
+                self.assertEqual(
+                    bn.sub_filename_stem(f"https://www.bilibili.com/video/BV1abc?p={page}", "ai-zh"),
+                    want,
+                )
+
+    def test_every_page_yields_a_distinct_stem(self):
+        """关键性质：不同分 P 必须映射到不同文件名，否则一定会读错。"""
+        stems = [bn.sub_filename_stem(f"https://www.bilibili.com/video/BV1abc?p={p}", "ai-zh")
+                 for p in range(1, 7)]
+        self.assertEqual(len(stems), len(set(stems)), f"分 P 文件名撞车：{stems}")
+
+    def test_stem_is_a_prefix_of_the_real_file_name(self):
+        """真实产物形如 BV1SYNTH0001_p6.ai-zh.srt。"""
+        stem = bn.sub_filename_stem("https://www.bilibili.com/video/BV1SYNTH0001?p=6", "ai-zh")
+        self.assertEqual(f"{stem}.ai-zh.srt", "BV1SYNTH0001_p6.ai-zh.srt")
+
+
+class TestDuplicatePartDetection(unittest.TestCase):
+    """拦截"每个分 P 都读到同一份字幕"的静默错误。"""
+
+    def test_detects_identical_parts(self):
+        parts = [{"page": 1, "text": "x" * 50}, {"page": 2, "text": "y" * 50},
+                 {"page": 3, "text": "x" * 50}]
+        self.assertEqual(bn.find_duplicate_part_texts(parts), (1, 3))
+
+    def test_no_false_positive_on_distinct_parts(self):
+        parts = [{"page": 1, "text": "x" * 50}, {"page": 2, "text": "y" * 50}]
+        self.assertIsNone(bn.find_duplicate_part_texts(parts))
+
+    def test_short_texts_are_not_compared(self):
+        """过短的正文偶然相同不算错误。"""
+        parts = [{"page": 1, "text": "谢谢观看"}, {"page": 2, "text": "谢谢观看"}]
+        self.assertIsNone(bn.find_duplicate_part_texts(parts))
+
+    def test_missing_text_is_ignored(self):
+        parts = [{"page": 1}, {"page": 2, "text": None}, {"page": 3, "text": "z" * 50}]
+        self.assertIsNone(bn.find_duplicate_part_texts(parts))
+
+
+class TestAnthologyCombine(unittest.TestCase):
+    """多 P 合集：各分 P 字幕后按累计时长重排成连续时间轴。
+
+    真实场景：vault 里那篇 2:10:35 的 WorldEdit 合集笔记，旧工具靠直调接口
+    拿到整篇字幕；本 skill 改为逐分 P 抓取 + 时间戳平移。
+    """
+
+    PARTS = [
+        {"duration": 100.0, "segments": [
+            {"time": 0.0, "text": "分P一的第一段字幕内容，用于验证时间戳平移是否正确。"},
+            {"time": 50.0, "text": "分P一的第二段字幕内容，应该落在五十秒的位置上。"},
+        ]},
+        {"duration": 200.5, "segments": [
+            {"time": 5.0, "text": "分P二的字幕内容，平移后应落在第一分P时长之后。"},
+        ]},
+        {"duration": 7.25, "segments": []},   # 该分 P 没抓到字幕
+        {"duration": 60.0, "segments": [
+            {"time": 1.0, "text": "分P四的字幕内容，时间戳必须把中间跳过的那段算进去。"},
+        ]},
+    ]
+
+    def test_segments_are_rebased_by_cumulative_offset(self):
+        segs = bn.rebase_segments(self.PARTS)
+        # d 在 1.0 + (100 + 200.5 + 7.25) = 308.75
+        self.assertEqual([s["time"] for s in segs], [0.0, 50.0, 105.0, 308.75])
+        self.assertTrue(segs[-1]["text"].startswith("分P四"))
+
+    def test_skipped_part_still_advances_the_timeline(self):
+        """没抓到字幕的分 P 不产出段落，但它占用的时间必须留在时间轴上；
+        否则它后面所有分 P 的时间戳都会前移，指向错误的画面。"""
+        skipped = [p for p in self.PARTS if p["duration"] == 7.25][0]
+        self.assertEqual(skipped["segments"], [])
+        # 把第 3 个分 P 的时长改成 0，第 4 个分 P 的时间戳就会前移 7.25s
+        parts_without_gap = [dict(p) for p in self.PARTS]
+        parts_without_gap[2]["duration"] = 0.0
+        self.assertEqual(bn.rebase_segments(self.PARTS)[-1]["time"], 308.75)
+        self.assertEqual(bn.rebase_segments(parts_without_gap)[-1]["time"], 301.5)
+
+    def test_first_part_keeps_original_timestamps(self):
+        segs = bn.rebase_segments([self.PARTS[0]])
+        self.assertEqual([s["time"] for s in segs], [0.0, 50.0])
+
+    def test_does_not_mutate_input(self):
+        import copy
+        before = copy.deepcopy(self.PARTS)
+        bn.rebase_segments(self.PARTS)
+        self.assertEqual(self.PARTS, before, "rebase_segments 不应改动入参")
+
+    def test_total_duration_counts_skipped_parts(self):
+        self.assertAlmostEqual(bn.total_duration(self.PARTS), 367.75)
+
+    def test_real_anthology_lands_in_three_digit_minutes(self):
+        """6 分 P 合集的真实时长分布应落进 3 位分钟区间。"""
+        real = [449.77, 1239.0, 1338.0, 350.0, 1122.0, 3331.775]
+        total = sum(real)
+        self.assertGreater(total, 6000, "合集总时长应超过 100 分钟")
+        self.assertEqual(bn.fmt_bullet_ts(6000)[:3], "100")
+        self.assertEqual(bn.fmt_bullet_ts(total), "130:30")
+
+    def test_build_note_from_combined_manifest(self):
+        """合成后的 manifest 能正常组装成笔记并通过结构自检。"""
+        segs = bn.rebase_segments(self.PARTS)
+        total = bn.total_duration(self.PARTS)
+        manifest = dict(
+            MANIFEST,
+            duration=total,
+            duration_hms=bn.fmt_ts(total),
+            is_anthology=True,
+            part_count=4,
+            segments=segs,
+            subtitle_text=bn.segments_to_text(segs),
+        )
+        # 要点必须落在真实时间段上（最后一条 308.75s -> 05:08）
+        bullets = [{"time": t, "title": f"要点{i}", "text": f"说明{i}"}
+                   for i, t in enumerate([0, 50, 105, 308, 360])]
+        note = bn.build_note(manifest, dict(SUMMARY, bullets=bullets), "2026-01-01")
+        tmp = Path(tempfile.mkdtemp())
+        p = tmp / "combined.md"
+        bn.write_text_lf(p, note)
+        rc = bn.cmd_verify(type("A", (), {"note": str(p), "min_bullets": 5})())
+        self.assertEqual(rc, 0)
+        self.assertIn('duration: "6:07"', note)
+        self.assertIn("[05:08]", note)   # 308s 总分钟数 5:08
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

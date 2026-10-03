@@ -313,6 +313,22 @@ def pick_lang(available: list[str]) -> str | None:
     return None
 
 
+def sub_filename_stem(url: str, lang: str) -> str:
+    """预测 yt-dlp 用 `-o "%(id)s"` 写出的字幕文件名（不含扩展名）。
+
+    单集：`BV1xxx`
+    多 P：`BV1xxx_p3`（yt-dlp 给分 P 的 id 带 `_pN` 后缀）
+
+    **不要用 `<bvid>*.srt` 这样的 glob 去挑文件**：合集会把 6 个分 P 全匹配上，
+    `sorted()` 之后永远取到 p1，于是每个分 P 都读到同一份字幕，
+    时间戳被平移成一串看似合理、实际全错的结果。
+    """
+    m = re.search(r"[?&]p=(\d+)", url)
+    page = int(m.group(1)) if m else 1
+    bvid = bvid_of(url)
+    return bvid if page == 1 else f"{bvid}_p{page}"
+
+
 def ytdlp_subs(ytdlp: str, url: str, cookies: Path, lang: str, work: Path) -> Path:
     """只拉字幕，绝不拉视频。
 
@@ -330,23 +346,37 @@ def ytdlp_subs(ytdlp: str, url: str, cookies: Path, lang: str, work: Path) -> Pa
         "--no-warnings",
         url,
     ]
+    # 先清掉本次目标文件，用"下载后新出现/被更新"来定位产物，避免误取旧文件。
+    expected = work / f"{sub_filename_stem(url, lang)}.srt"
+    if expected.is_file():
+        expected.unlink()
+    before = {p.name: p.stat().st_mtime_ns for p in work.glob("*.srt")}
+
     proc = run(cmd)
     if proc.returncode != 0:
         raise BiliNoteError(f"yt-dlp 字幕下载失败：\n{(proc.stderr or '').strip()[-800:]}")
 
-    bvid = bvid_of(url)
-    # 优先精确匹配 `<bvid>.<lang>.srt`；不行再退回 `<bvid>*.srt`（有些语言码
-    # 会被 yt-dlp 规范化，例如传 zh-CN 实际写出 zh-CN.srt 之外的变体）。
-    exact = work / f"{bvid}.{lang}.srt"
-    if exact.is_file():
-        return exact
-    hits = sorted(work.glob(f"{bvid}*.srt"))
-    if not hits:
+    # 定位产物：优先期望文件名，其次本次运行新增/更新的 srt。
+    if expected.is_file():
+        return expected
+    after = {p.name: p.stat().st_mtime_ns for p in work.glob("*.srt")}
+    changed = [work / n for n, t in after.items() if before.get(n) != t]
+    if len(changed) == 1:
+        return changed[0]
+    if changed:
+        # 多个候选：取本次更新里最贴近期望名字的一个（语言码可能被规范化）
+        changed.sort(key=lambda p: (not p.name.startswith(bvid_of(url)), p.name))
+        return changed[0]
+
+    if work.glob("*.srt"):
         raise BiliNoteError(
-            f"yt-dlp 未写出字幕文件（语言 {lang}）。"
-            f"通常是该视频没有对应字幕，或 cookie 登录态已失效。"
+            f"yt-dlp 没有写出新的字幕文件（语言 {lang}），但目录里已有其它 .srt。"
+            f"通常说明该语言不存在，命中了旧文件。"
         )
-    return hits[0]
+    raise BiliNoteError(
+        f"yt-dlp 未写出字幕文件（语言 {lang}）。"
+        f"通常是该视频没有对应字幕，或 cookie 登录态已失效。"
+    )
 
 
 # ---------------------------------------------------------------- SRT
@@ -401,6 +431,121 @@ def segments_to_text(segs: list[dict]) -> str:
 # ---------------------------------------------------------------- fetch
 
 
+def cookie_candidates(available: list[str]) -> list[str]:
+    """语言候选顺序：清单命中的优先，其后按固定优先级补齐。"""
+    out: list[str] = []
+    if available:
+        first = pick_lang(available)
+        if first:
+            out.append(first)
+    for lang in SUB_LANG_PRIORITY:
+        if lang not in out:
+            out.append(lang)
+    return out
+
+
+def probe_subtitle_langs(ytdlp: str, url: str, cookies: Path) -> list[str]:
+    """探测可用字幕语言；清单为空时打印提示（B站会临时限流）。"""
+    available = ytdlp_list_subs(ytdlp, url, cookies)
+    log(f"  可用字幕语言：{', '.join(available) if available else '(清单为空)'}")
+    if not available:
+        log("  ! 字幕清单为空（可能是临时限流），改为逐个语言探测")
+    return available
+
+
+def fetch_subtitle_segments(
+    ytdlp: str, url: str, cookies: Path, work: Path,
+    available: list[str], prefer: str | None = None,
+    label: str = "",
+) -> tuple[str, list[dict]]:
+    """按候选语言逐个真下载，返回 (命中的语言, 解析后的字幕段)。
+
+    `prefer` 用于多 P 合集：第一个分 P 协商出的语言直接给后续分 P 先用，
+    避免每个分 P 都从零探测。命中的语言仍然带回，供调用方更新 prefer。
+    """
+    candidates = cookie_candidates(available)
+    if prefer and prefer in candidates:
+        candidates.remove(prefer)
+        candidates.insert(0, prefer)
+    elif prefer:
+        candidates.insert(0, prefer)
+
+    errors: list[str] = []
+    for lang in candidates:
+        try:
+            srt_path = ytdlp_subs(ytdlp, url, cookies, lang, work)
+        except BiliNoteError as exc:
+            errors.append(f"{lang}: {exc}")
+            continue
+        segs = parse_srt(srt_path.read_text(encoding="utf-8", errors="replace"))
+        if not segs:
+            errors.append(f"{lang}: 字幕解析后为空")
+            continue
+        return lang, segs
+
+    head = f"{label} " if label else ""
+    detail = "; ".join(errors[:3]) if errors else "无候选语言"
+    raise BiliNoteError(
+        f"{head}没有可用中文字幕，或 cookie 登录态已失效。"
+        f"已尝试 {len(candidates)} 种语言（{detail}）。"
+    )
+
+
+def part_url(bvid: str, page: int) -> str:
+    return f"https://www.bilibili.com/video/{bvid}?p={page}"
+
+
+def rebase_segments(parts: list[dict]) -> list[dict]:
+    """把各分 P 的字幕段时间戳按累计时长平移，拼成一条连续时间轴。
+
+    `parts` 形如 [{"duration": 秒, "segments": [...]}, ...]，必须按分 P 顺序。
+    返回新的段列表（不改动入参），时间戳四舍五入到毫秒。
+    """
+    out: list[dict] = []
+    offset = 0.0
+    for part in parts:
+        for seg in part.get("segments") or []:
+            out.append({"time": round(float(seg["time"]) + offset, 3), "text": seg["text"]})
+        offset += float(part.get("duration") or 0)
+    return out
+
+
+def total_duration(parts: list[dict]) -> float:
+    """各分 P 时长之和（跳过的分 P 也计入，保证时间轴与视频一致）。"""
+    return sum(float(p.get("duration") or 0) for p in parts)
+
+
+def find_duplicate_part_texts(parts: list[dict], min_chars: int = 40) -> tuple | None:
+    """找出字幕正文完全相同的两个分 P，返回 (第一个, 第二个) 否则 None。
+
+    用于拦截"每个分 P 都读到同一份字幕"这类静默错误：合集会正常生成、
+    时长也对，但内容全是一个分 P 的重复。
+    只在正文长度 >= min_chars 时比较，避免短分 P 偶然重复造成误报。
+    """
+    seen: dict[str, int] = {}
+    for pm in parts:
+        text = (pm.get("text") or "").strip()
+        if len(text) < min_chars:
+            continue
+        if text in seen:
+            return (seen[text], pm.get("page"))
+        seen[text] = pm.get("page")
+    return None
+
+
+def collect_meta(ytdlp: str, bvid: str, cookies: Path, pages: list[int]) -> list[dict]:
+    """逐个分 P 取元数据（标题/时长），串行以免触发限流。"""
+    out = []
+    for p in pages:
+        meta = ytdlp_meta(ytdlp, part_url(bvid, p), cookies)
+        out.append({
+            "page": p,
+            "title": (meta.get("title") or "").strip(),
+            "duration": float(meta.get("duration") or 0),
+        })
+    return out
+
+
 def cmd_fetch(args) -> int:
     ytdlp = find_ytdlp()
     url = norm_url(args.url)
@@ -420,72 +565,137 @@ def cmd_fetch(args) -> int:
         log("! 警告：cookie 里没有 SESSDATA，AI 字幕大概率拿不到（仅 UP 主上传的字幕可用）")
     log(f"✓ cookie 归一化：{src} -> {cookies}（{n} 条 bilibili 域 cookie）")
 
+    # 首次探测：同时拿到分 P 结构（n_entries / playlist_title / playlist_count）
     meta = ytdlp_meta(ytdlp, url, cookies)
-    title = (meta.get("title") or "").strip()
     uploader = (meta.get("uploader") or meta.get("channel") or "").strip()
-    duration = float(meta.get("duration") or 0)
-    log(f"✓ 元数据：{title}（{uploader or '未知UP'}）｜时长 {fmt_ts(duration)}")
+    part_count = int(meta.get("n_entries") or meta.get("playlist_count") or 1)
+    playlist_title = (meta.get("playlist_title") or meta.get("playlist") or "").strip()
+    is_anthology = bool(meta.get("playlist_id")) and part_count > 1
 
-    # 字幕语言协商。
-    # 先试 `--list-subs` 拿真实清单；拿不到（B站对密集请求会临时限流，
-    # 表现为清单为空）就按优先顺序逐个真下载探测，而不是直接判定"无字幕"
-    # 放弃这个视频。
-    available = ytdlp_list_subs(ytdlp, url, cookies)
-    log(f"  可用字幕语言：{', '.join(available) if available else '(清单为空)'}")
+    # 是否只取指定分 P：由输入 URL 里的 ?p= 决定
+    m_page = re.search(r"[?&]p=(\d+)", args.url)
+    want_page = int(m_page.group(1)) if m_page else None
 
-    candidates: list[str] = []
-    if available:
-        first = pick_lang(available)
-        if first:
-            candidates.append(first)
-    for lang in SUB_LANG_PRIORITY:
-        if lang not in candidates:
-            candidates.append(lang)
+    if is_anthology:
+        log(f"✓ 检测到多 P 合集：{part_count} 个分 P｜{playlist_title or '(无合集标题)'}")
+    else:
+        log(f"✓ 元数据：{(meta.get('title') or '').strip()}（{uploader or '未知UP'}）"
+            f"｜时长 {fmt_ts(float(meta.get('duration') or 0))}")
 
-    if not available:
-        log("  ! 字幕清单为空（可能是临时限流），改为逐个语言探测")
+    parts_meta: list[dict] = []
+    combined_segments: list[dict] = []
+    prefer: str | None = None
+    chosen_lang: str | None = None
+    available: list[str] = []
 
-    srt_path = None
-    chosen = None
-    errors: list[str] = []
-    for lang in candidates:
-        try:
-            srt_path = ytdlp_subs(ytdlp, url, cookies, lang, work)
-            chosen = lang
-            break
-        except BiliNoteError as exc:
-            errors.append(f"{lang}: {exc}")
-    if srt_path is None or chosen is None:
-        detail = "; ".join(errors[:3]) if errors else "无候选语言"
-        raise BiliNoteError(
-            f"该视频没有可用中文字幕，或 cookie 登录态已失效。"
-            f"已尝试 {len(candidates)} 种语言（{detail}）。按约定跳过，不生成空笔记。"
+    if not is_anthology or want_page is not None:
+        # ---- 单集：单 P、或合集里被 ?p=N 指定的那一个 ----
+        page = want_page or 1
+        target_url = part_url(bvid, page) if is_anthology else url
+        single = meta if not is_anthology else ytdlp_meta(ytdlp, target_url, cookies)
+        title = (single.get("title") or "").strip()
+        duration = float(single.get("duration") or 0)
+        if is_anthology:
+            log(f"  只取分 P{page}：{title}｜{fmt_ts(duration)}")
+
+        available = probe_subtitle_langs(ytdlp, target_url, cookies)
+        chosen_lang, segs = fetch_subtitle_segments(
+            ytdlp, target_url, cookies, work, available,
+            label=f"分 P{page}" if is_anthology else "",
         )
-    log(f"✓ 字幕语言命中：{chosen}")
-    segs = parse_srt(srt_path.read_text(encoding="utf-8", errors="replace"))
-    if not segs:
-        raise BiliNoteError(f"字幕解析后为空：{srt_path}")
-    log(f"✓ 字幕：{chosen}，{len(segs)} 段，{len(segments_to_text(segs))} 字")
+        log(f"✓ 字幕：{chosen_lang}，{len(segs)} 段，{len(segments_to_text(segs))} 字")
+        combined_segments = segs
+        parts_meta.append({"page": page, "title": title, "duration": duration,
+                           "duration_hms": fmt_ts(duration), "offset": 0.0})
+        final_title = title
+        total = duration
+    else:
+        # ---- 合集：逐分 P 抓字幕，再按累计时长重排时间戳 ----
+        log(f"  逐分 P 抓取 {part_count} 个分 P（每个都要一次元数据 + 一次字幕请求）")
+        meta_list = collect_meta(ytdlp, bvid, cookies, list(range(1, part_count + 1)))
+
+        offset = 0.0
+        failed: list[str] = []
+        for pm in meta_list:
+            page = pm["page"]
+            purl = part_url(bvid, page)
+            pm["duration_hms"] = fmt_ts(pm["duration"])
+            pm["offset"] = round(offset, 3)
+            try:
+                if chosen_lang is None:
+                    available = probe_subtitle_langs(ytdlp, purl, cookies)
+                _, segs = fetch_subtitle_segments(
+                    ytdlp, purl, cookies, work, available, prefer=prefer, label=f"分 P{page}",
+                )
+            except BiliNoteError as exc:
+                log(f"  ✗ 分 P{page} 跳过：{exc}")
+                failed.append(f"P{page}")
+                pm["skipped"] = True
+                parts_meta.append(pm)
+                offset += pm["duration"]
+                continue
+
+            if prefer is None:
+                prefer = chosen_lang
+            pm["text"] = segments_to_text(segs)
+            pm["segment_count"] = len(segs)
+            for seg in segs:
+                combined_segments.append(
+                    {"time": round(seg["time"] + offset, 3), "text": seg["text"]}
+                )
+            parts_meta.append(pm)
+            log(f"  ✓ P{page} {pm['duration_hms']:>8}  {len(segs):>4} 段  {pm['title'][:40]}")
+            offset += pm["duration"]
+
+        total = offset
+        final_title = playlist_title or (meta_list[0]["title"] if meta_list else bvid)
+        chosen_lang = prefer
+        if not combined_segments:
+            raise BiliNoteError(
+                f"合集里没有任何分 P 拿到字幕（失败：{', '.join(failed) or '全部'}）。"
+                "按约定跳过，不生成空笔记。"
+            )
+
+        # 完整性校验：如果某个分 P 的字幕其实是另一份的副本（例如文件选择写错，
+        # 每个分 P 都读到同一份 SRT），合成结果会"看起来正常"但内容全错。
+        # 这里对相邻分 P 的字幕正文做碰撞检测。
+        dup = find_duplicate_part_texts(parts_meta)
+        if dup:
+            raise BiliNoteError(
+                f"合集字幕完整性校验失败：分 P {dup[0]} 与 {dup[1]} 的字幕正文完全相同，"
+                "说明有分 P 复用了同一份字幕文件。拒绝生成错误笔记。"
+            )
+
+        if failed:
+            log(f"! 有 {len(failed)} 个分 P 未取到字幕并已跳过：{', '.join(failed)}")
+        log(f"✓ 合集合成：{fmt_ts(total)}，{len(combined_segments)} 段，"
+            f"{len(segments_to_text(combined_segments))} 字")
+
+    if not combined_segments:
+        raise BiliNoteError("字幕为空，未生成任何内容")
 
     # 确认没有误拉媒体文件
     junk = [p.name for p in work.iterdir()
-            if p.suffix.lower() in (".mp4", ".flv", ".m4a", ".webm", ".mp3", ".part", ".f30280", ".f100026")]
+            if p.suffix.lower() in (".mp4", ".flv", ".m4a", ".webm", ".mp3", ".part",
+                                    ".f30280", ".f100026")]
     if junk:
         log(f"! 警告：工作目录出现媒体文件（本流程不应下载视频）：{junk}")
 
     manifest = {
         "bvid": bvid,
-        "url": url,
-        "title": title,
+        "url": f"https://www.bilibili.com/video/{bvid}",
+        "title": final_title,
         "uploader": uploader,
-        "duration": duration,
-        "duration_hms": fmt_ts(duration),
-        "subtitle_lang": chosen,
+        "duration": total,
+        "duration_hms": fmt_ts(total),
+        "is_anthology": is_anthology,
+        "part_count": part_count if is_anthology else 1,
+        "parts": parts_meta,
+        "subtitle_lang": chosen_lang,
         "subtitle_available": available,
-        "srt": str(srt_path),
-        "segment_count": len(segs),
-        "subtitle_text": segments_to_text(segs),
-        "segments": segs,
+        "segment_count": len(combined_segments),
+        "subtitle_text": segments_to_text(combined_segments),
+        "segments": combined_segments,
     }
     write_text_lf(work / "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
     log(f"✓ manifest：{work / 'manifest.json'}")
