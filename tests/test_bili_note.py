@@ -741,6 +741,13 @@ class TestRepoHygiene(unittest.TestCase):
                  ".mypy_cache", "build", "dist", "node_modules", ".venv", "venv"}
 
     def _tracked_text_files(self):
+        """产出所有"文本"文件，供换行/BOM 检查使用。
+
+        二进制文件（文档配图 .png/.jpg、字体等）必须排除：它们的字节流里
+        随时可能出现 0x0D 0x0A 或 BOM 序列，被当成文本检查就是误报。
+        早期版本只按扩展名黑名单（.pyc/.srt）排除，加入第一张截图后立刻误报，
+        所以改成按内容判定：能严格 UTF-8 解码且不含 NUL 字节的才算文本。
+        """
         for path in self.REPO.rglob("*"):
             if not path.is_file():
                 continue
@@ -749,9 +756,23 @@ class TestRepoHygiene(unittest.TestCase):
                 continue
             if any(part.endswith(".egg-info") for part in rel.parts):
                 continue
-            if path.suffix in {".pyc", ".srt"}:
+            if not self._is_text(path):
                 continue
             yield rel, path
+
+    @staticmethod
+    def _is_text(path: Path) -> bool:
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return False
+        if b"\x00" in raw:
+            return False
+        try:
+            raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+        return True
 
     def test_no_crlf_in_repo_text_files(self):
         offenders = []
@@ -762,6 +783,31 @@ class TestRepoHygiene(unittest.TestCase):
             except OSError:
                 continue
         self.assertEqual(offenders, [], f"以下文件含 CRLF 换行：{offenders}")
+
+    def test_binary_files_are_not_scanned_for_line_endings(self):
+        """二进制文件不得进入换行/BOM 检查。
+
+        回归：加入第一张 README 截图（docs/images/*.png）后，PNG 字节流里
+        出现 0x0D 0x0A 被误报为"含 CRLF"。原因是当时只按扩展名黑名单
+        （.pyc/.srt）排除二进制。
+        """
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32 + b"\r\n"
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "shot.png"
+            f.write_bytes(png)
+            self.assertFalse(self._is_text(f), "含 NUL 的 PNG 应被判为二进制")
+
+            txt = Path(td) / "note.md"
+            txt.write_text("| - bullet\r\ncrlf text\n", encoding="utf-8")
+            self.assertTrue(self._is_text(txt), "正常文本应被判为文本")
+
+            # 真实仓库里的截图也必须被排除
+            images = sorted((self.REPO / "docs" / "images").glob("*.png"))
+            if images:
+                for img in images:
+                    with self.subTest(img=img.name):
+                        self.assertFalse(self._is_text(img),
+                                         f"{img.name} 是图片，不应被当作文本扫描")
 
     def test_no_bom_in_repo_text_files(self):
         offenders = []

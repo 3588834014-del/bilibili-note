@@ -35,6 +35,20 @@ flowchart LR
 
 ---
 
+## 真实产出
+
+对一条真实视频执行 `fetch` —— 注意目录里**没有**什么：没有 `.mp4`、`.flv`、`.m4a`、`.part`，
+只有字幕文件和它的 manifest。
+
+![fetch：只拉字幕，无媒体文件](docs/images/demo-fetch.png)
+
+以及它生成的笔记（Obsidian 渲染效果：frontmatter、可点击的 `?t=` 跳转链接、摘要、要点、标签）。
+截图来自真实运行，不是示意图：
+
+![生成的笔记](docs/images/demo-note.png)
+
+---
+
 ## 安装
 
 同一个实现支持两种用法：**独立 CLI**（推荐，受众更广）和 **dsh skill**。

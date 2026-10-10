@@ -23,6 +23,18 @@ Bilibili URL ──▶ fetch ──▶ manifest.json ──▶ [you / agent] ─
                   └── yt-dlp, subtitles only ────────────────────────────────────────┘
 ```
 
+## Real output
+
+`fetch` on a real video — note what is *not* there: no `.mp4`, `.flv`, `.m4a` or `.part`,
+only the subtitle file and its manifest.
+
+![fetch: subtitles only, no media files](docs/images/demo-fetch.png)
+
+And the note it produces (Obsidian rendering — front matter, clickable `?t=` jump links,
+summary, bullets, tags). Screenshot taken from a real run, not a mock-up:
+
+![the generated note](docs/images/demo-note.png)
+
 ## Why this one
 
 - **Subtitles only.** `--skip-download` is mandatory, and the tool verifies no media file
