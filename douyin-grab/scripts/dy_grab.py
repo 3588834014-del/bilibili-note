@@ -354,6 +354,13 @@ def main(argv=None) -> int:
         )
         return EXIT_CONFIG
 
+    vault = Path(config.VAULT_ROOT)
+    if not vault.is_dir():
+        _log(f"库根目录不存在：{vault}")
+        return EXIT_CONFIG
+    if not (vault / ".obsidian").is_dir():
+        _log(f"警告：{vault} 下没有 .obsidian，确认这是 Obsidian 库根目录。")
+
     if not args.share:
         _log("用法：python dy_grab.py --vault \"<库根>\" \"<抖音分享口令>\"")
         return EXIT_NO_URL
