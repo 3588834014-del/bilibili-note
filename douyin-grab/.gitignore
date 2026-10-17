@@ -1,0 +1,28 @@
+# 缓存与编译产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# 运行产物
+processed.json
+.douyin_grab/
+server.log
+
+# 凭据：绝对不能提交
+cookies.txt
+cookies*.txt
+*_cookies*.txt
+.env
+.env.*
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
